@@ -4,16 +4,20 @@ import install from '../index.ts';
 function fixture() {
  const hooks = new Map(), commands = new Map(), shortcuts = new Map(), sent = [], notices = [], statuses = [];
  let editor = 'shortcut message';
- let aborts = 0, idle = false;
+ let aborts = 0, idle = false, queued = false;
  const pi = { on: (name, fn) => hooks.set(name, fn), registerCommand: (name, fn) => commands.set(name, fn), registerShortcut: (name, fn) => shortcuts.set(name, fn), sendUserMessage: (...args) => sent.push(args) };
- const ctx = { mode: 'tui', isIdle: () => idle, abort: () => { aborts++; }, ui: { getEditorText: () => editor, setEditorText: text => { editor = text; }, setStatus: (...x) => statuses.push(x), notify: (...x) => notices.push(x) } };
+ const ctx = { mode: 'tui', isIdle: () => idle, abort: () => { aborts++; }, hasPendingMessages: () => queued,
+  ui: { getEditorText: () => editor, setEditorText: text => { editor = text; }, setStatus: (...x) => statuses.push(x), notify: (...x) => notices.push(x) } };
  install(pi);
- const input = (overrides = {}) => hooks.get('input')({ text: 'new direction', source: 'interactive', streamingBehavior: 'steer', ...overrides }, ctx);
- return { hooks, commands, shortcuts, sent, notices, statuses, ctx, input, editor: () => editor, setEditor: text => { editor = text; }, aborts: () => aborts, setIdle: v => idle = v, enable: () => commands.get('interrupt-mode').handler('on', ctx) };
+ // Pi's TUI clears the editor before dispatching a steering submission.
+ const input = (overrides = {}) => { editor = ""; return hooks.get('input')({ text: 'new direction', source: 'interactive', streamingBehavior: 'steer', ...overrides }, ctx); };
+ return { hooks, commands, shortcuts, sent, notices, statuses, ctx, input, editor: () => editor, setEditor: text => { editor = text; }, setQueued: v => queued = v, aborts: () => aborts, setIdle: v => idle = v, enable: () => commands.get('interrupt-mode').handler('on', ctx) };
 }
 test('Ctrl+Enter interrupts without enabling Enter mode', async () => { const f = fixture(); await f.shortcuts.get('ctrl+enter').handler(f.ctx); assert.equal(f.aborts(), 1); assert.equal(f.editor(), ''); assert.equal(f.sent.length, 0); f.hooks.get('agent_settled')({}, f.ctx); assert.equal(f.sent[0][0], 'shortcut message'); assert.equal(f.input().action, 'continue'); });
 test('Ctrl+Enter submits immediately when idle', async () => { const f = fixture(); f.setIdle(true); await f.shortcuts.get('ctrl+enter').handler(f.ctx); assert.equal(f.aborts(), 0); assert.deepEqual(f.sent, [['shortcut message']]); assert.equal(f.editor(), ''); });
 test('Ctrl+Enter leaves empty input and commands alone', async () => { const f = fixture(); for (const text of ['', '  ', '/model', '!ls', '!!ls']) { f.setEditor(text); await f.shortcuts.get('ctrl+enter').handler(f.ctx); assert.equal(f.editor(), text); } assert.equal(f.aborts(), 0); assert.equal(f.sent.length, 0); });
+test('Ctrl+Enter with nothing queued and no draft does not abort', async () => { const f = fixture(); f.setEditor(''); await f.shortcuts.get('ctrl+enter').handler(f.ctx); assert.equal(f.aborts(), 0); assert.equal(f.sent.length, 0); assert.equal(f.editor(), ''); });
+test('Ctrl+Enter aborts for a queued-only send when the editor is empty', async () => { const f = fixture(); f.setEditor(''); f.setQueued(true); await f.shortcuts.get('ctrl+enter').handler(f.ctx); assert.equal(f.aborts(), 1); assert.equal(f.editor(), ''); assert.equal(f.sent.length, 0); f.hooks.get('agent_settled')({}, f.ctx); assert.equal(f.sent.length, 0); });
 test('restore recovers submitted text without overwriting a new draft', async () => { const f = fixture(); f.setIdle(true); await f.shortcuts.get('ctrl+enter').handler(f.ctx); await f.commands.get('interrupt-restore').handler('', f.ctx); assert.equal(f.editor(), 'shortcut message'); f.setEditor('new draft'); await f.commands.get('interrupt-restore').handler('', f.ctx); assert.equal(f.editor(), 'new draft'); });
 test('restore does not duplicate a message still awaiting cancellation', async () => { const f = fixture(); await f.shortcuts.get('ctrl+enter').handler(f.ctx); await f.commands.get('interrupt-restore').handler('', f.ctx); assert.equal(f.editor(), ''); assert.equal(f.sent.length, 0); f.hooks.get('agent_settled')({}, f.ctx); await f.commands.get('interrupt-restore').handler('', f.ctx); assert.equal(f.editor(), 'shortcut message'); });
 test('default off preserves steering', () => { const f = fixture(); assert.equal(f.input().action, 'continue'); assert.equal(f.aborts(), 0); });

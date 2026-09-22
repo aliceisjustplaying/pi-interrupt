@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-/** Opt-in, TUI-only interrupt-on-submit. No provider or keybinding changes. */
+/** Claude Code send-now semantics for Pi: Ctrl+Enter interrupts the run, then
+ *  everything queued goes out right away with the editor text behind it. */
 export default function interruptMode(pi: ExtensionAPI) {
   let enabled = false;
   let pending: string[] = [];
@@ -29,7 +30,7 @@ export default function interruptMode(pi: ExtensionAPI) {
       }
       showStatus(ctx);
       ctx.ui.notify(enabled
-        ? "Interrupt mode ON: ordinary steering submissions abort the active run, then send. Follow-up submissions still queue. Commands and images keep normal behavior."
+        ? "Interrupt mode ON: ordinary steering submissions abort the active run, then send together with anything queued. Follow-up submissions still queue. Commands and images keep normal behavior."
         : "Interrupt mode OFF: normal steering and follow-up behavior.", "info");
     },
   });
@@ -51,25 +52,39 @@ export default function interruptMode(pi: ExtensionAPI) {
   });
 
   pi.registerShortcut("ctrl+enter", {
-    description: "Interrupt the active run and send the editor text (Enter still steers; Alt+Enter queues)",
+    description: "Send queued messages now: interrupt the run, then send queued entries followed by the editor text",
     handler: async (ctx) => {
       if (ctx.mode !== "tui") return;
       const text = ctx.ui.getEditorText();
-      if (!text.trim()) return;
       // Leave commands to Pi's regular submission path.
       if (text.trimStart().startsWith("/") || text.trimStart().startsWith("!")) {
         ctx.ui.notify("Use Enter for slash commands and shell commands.", "info");
         return;
       }
       if (ctx.isIdle()) {
+        if (!text.trim()) return;
         lastSubmission = text;
         pi.sendUserMessage(text);
-      } else {
-        pending.push(text);
-        if (pending.length === 1) ctx.abort();
-        ctx.ui.setStatus("interrupt-mode", "interrupt: waiting for cancellation");
+        ctx.ui.setEditorText("");
+        return;
       }
+      // Claude Code send-now: nothing queued and no draft means nothing to send.
+      if (!text.trim() && !ctx.hasPendingMessages()) return;
+      // Pi's abort handler restores queued messages into the editor ahead of
+      // the draft before cancelling. Capture that combined text so the queued
+      // entries and the draft all go out right after cancellation settles.
+      ctx.abort();
+      const queued = ctx.ui.getEditorText();
       ctx.ui.setEditorText("");
+      if (!queued.trim()) return;
+      if (ctx.isIdle()) {
+        // Cancellation settled synchronously; do not wait for another event.
+        lastSubmission = queued;
+        pi.sendUserMessage(queued);
+        return;
+      }
+      pending.push(queued);
+      ctx.ui.setStatus("interrupt-mode", "interrupt: waiting for cancellation");
     },
   });
 
@@ -81,10 +96,20 @@ export default function interruptMode(pi: ExtensionAPI) {
         event.images?.length || !event.text.trim() || event.text.trimStart().startsWith("/")) {
       return { action: "continue" };
     }
-    // Capture before aborting. Never await idle from an input/lifecycle handler.
+    // Pi clears the editor before dispatching a steering submission, so the
+    // abort's queue restore below captures only previously queued entries.
     // Rapid submissions during cancellation are retained in order in one prompt.
-    pending.push(event.text);
-    if (pending.length === 1) ctx.abort();
+    if (pending.length === 0) {
+      ctx.abort();
+      const restored = ctx.ui.getEditorText();
+      ctx.ui.setEditorText("");
+      const combined = [restored, event.text]
+        .filter((part) => part.trim())
+        .join("\n\n");
+      if (combined.trim()) pending.push(combined);
+    } else {
+      pending.push(event.text);
+    }
     ctx.ui.setStatus("interrupt-mode", "interrupt mode: waiting for cancellation");
     return { action: "handled" };
   });
@@ -93,7 +118,6 @@ export default function interruptMode(pi: ExtensionAPI) {
     if (!pending.length) return;
     const text = pending.join("\n\n");
     // Pi defers sends from this hook until all settled handlers have finished.
-    // Existing Pi steering/follow-up queues are neither cleared nor rewritten.
     lastSubmission = text;
     pi.sendUserMessage(text, { deliverAs: "steer" });
     pending = [];

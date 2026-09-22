@@ -7,7 +7,9 @@ import { createAssistantMessageEventStream, InMemoryCredentialStore, InMemoryMod
 import install from '../index.ts';
 
 // No live model requests, real credentials, user settings or global extensions.
-async function fixture() {
+// options.tuiAbort binds the same abort handler Pi's terminal UI uses, which
+// drains the queues and restores them into the editor before cancelling.
+async function fixture(options = {}) {
   const root = process.env.TMPDIR || join(import.meta.dirname, '..', '.test-artifacts');
   await mkdir(root, { recursive: true });
   const dir = await mkdtemp(join(root, 'pi-interrupt-test-'));
@@ -35,9 +37,18 @@ async function fixture() {
     cwd: dir, agentDir: dir, modelRuntime, model, resourceLoader: loader,
     settingsManager, sessionManager: SessionManager.inMemory(dir), noTools: 'all',
   });
-  await session.bindExtensions({ mode: 'tui', onError: error => errors.push(error), uiContext: {
+  const bindings = { mode: 'tui', onError: error => errors.push(error), uiContext: {
     setStatus() {}, notify() {}, getEditorText: () => editor, setEditorText: value => { editor = value; },
-  } });
+  } };
+  if (options.tuiAbort) {
+    bindings.abortHandler = () => {
+      const { steering, followUp } = session.clearQueue();
+      const queued = [...steering, ...followUp];
+      if (queued.length) editor = [...queued, editor].filter(t => t.trim()).join("\n\n");
+      void session.abort();
+    };
+  }
+  await session.bindExtensions(bindings);
   const started = Promise.withResolvers();
   let calls = 0, signal;
   session.agent.streamFunction = (_model, _context, options) => {
@@ -64,7 +75,13 @@ async function fixture() {
   });
   return { session, errors, started: started.promise, finished: finished.promise,
     interrupt: () => shortcuts.get('ctrl+enter').handler(ctx),
+    submit: (text, opts) => { editor = ""; return session.prompt(text, opts); },
+    setEditor: text => { editor = text; },
     signal: () => signal, editor: () => editor };
+}
+
+function userTexts(f) {
+  return f.session.messages.filter(m => m.role === 'user').map(m => m.content.filter(c => c.type === 'text').map(c => c.text).join(''));
 }
 
 for (const [mode, queue] of [['shortcut', 'followUp'], ['enter-mode', 'followUp'], ['shortcut', 'steer']]) {
@@ -77,12 +94,12 @@ for (const [mode, queue] of [['shortcut', 'followUp'], ['enter-mode', 'followUp'
       await f.session.prompt('queued message', { streamingBehavior: queue });
       assert.equal(f.signal().aborted, false);
       if (mode === 'shortcut') await f.interrupt();
-      else await f.session.prompt('interrupt message', { streamingBehavior: 'steer' });
+      else await f.submit('interrupt message', { streamingBehavior: 'steer' });
       assert.equal(f.signal().aborted, true);
       await first;
       await f.finished;
       await f.session.waitForIdle();
-      const texts = f.session.messages.filter(m => m.role === 'user').map(m => m.content.filter(c => c.type === 'text').map(c => c.text).join(''));
+      const texts = userTexts(f);
       assert.deepEqual(texts, ['original message', 'interrupt message', 'queued message']);
       assert.deepEqual(f.errors, []);
       if (mode === 'shortcut') assert.equal(f.editor(), '');
@@ -92,3 +109,68 @@ for (const [mode, queue] of [['shortcut', 'followUp'], ['enter-mode', 'followUp'
     }
   });
 }
+
+for (const queue of ['steer', 'followUp']) {
+  test(`shortcut with TUI abort restore sends queued ${queue} ahead of the draft`, { timeout: 15000 }, async () => {
+    const f = await fixture({ tuiAbort: true });
+    try {
+      const first = f.session.prompt('original message');
+      await f.started;
+      await f.session.prompt('queued message', { streamingBehavior: queue });
+      await f.interrupt();
+      assert.equal(f.signal().aborted, true);
+      await first;
+      await f.finished;
+      await f.session.waitForIdle();
+      const texts = userTexts(f);
+      assert.deepEqual(texts, ['original message', 'queued message\n\ninterrupt message']);
+      assert.deepEqual(f.errors, []);
+      assert.equal(f.editor(), '');
+    } finally {
+      await f.session.abort();
+      f.session.dispose();
+    }
+  });
+}
+
+test('shortcut with TUI abort restore sends queued messages alone when the editor is empty', { timeout: 15000 }, async () => {
+  const f = await fixture({ tuiAbort: true });
+  try {
+    const first = f.session.prompt('original message');
+    await f.started;
+    await f.session.prompt('queued message', { streamingBehavior: 'steer' });
+    f.setEditor('');
+    await f.interrupt();
+    assert.equal(f.signal().aborted, true);
+    await first;
+    await f.finished;
+    await f.session.waitForIdle();
+    assert.deepEqual(userTexts(f), ['original message', 'queued message']);
+    assert.deepEqual(f.errors, []);
+    assert.equal(f.editor(), '');
+  } finally {
+    await f.session.abort();
+    f.session.dispose();
+  }
+});
+
+test('enter-mode with TUI abort restore sends queued entries ahead of the submission', { timeout: 15000 }, async () => {
+  const f = await fixture({ tuiAbort: true });
+  try {
+    await f.session.prompt('/interrupt-mode on');
+    const first = f.session.prompt('original message');
+    await f.started;
+    await f.submit('queued message', { streamingBehavior: 'steer' });
+    await f.submit('interrupt message', { streamingBehavior: 'steer' });
+    assert.equal(f.signal().aborted, true);
+    await first;
+    await f.finished;
+    await f.session.waitForIdle();
+    assert.deepEqual(userTexts(f), ['original message', 'queued message\n\ninterrupt message']);
+    assert.deepEqual(f.errors, []);
+    assert.equal(f.editor(), '');
+  } finally {
+    await f.session.abort();
+    f.session.dispose();
+  }
+});

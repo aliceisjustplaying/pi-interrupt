@@ -1,0 +1,26 @@
+{
+  "name": "@aliceisjustplaying/pi-interrupt",
+  "version": "0.1.0",
+  "description": "Ctrl+Enter to interrupt and send in Pi, without changing Enter steering or Alt+Enter queuing.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aliceisjustplaying/pi-interrupt.git"
+  },
+  "keywords": ["pi-package", "pi-extension", "interrupt"],
+  "files": ["index.ts", "README.md", "LICENSE"],
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": { "node": ">=24" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.87.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

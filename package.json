@@ -8,19 +8,39 @@
     "type": "git",
     "url": "https://github.com/aliceisjustplaying/pi-interrupt.git"
   },
-  "keywords": ["pi-package", "pi-extension", "interrupt"],
-  "files": ["index.ts", "README.md", "LICENSE"],
-  "pi": { "extensions": ["./index.ts"] },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "interrupt"
+  ],
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
-  "engines": { "node": ">=24" },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
-  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },
+  "engines": {
+    "node": ">=24"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.0",
-    "@types/node": "^24.0.0",
-    "typescript": "^5.9.0"
+    "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
   }
 }
